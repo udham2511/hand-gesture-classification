@@ -1,0 +1,11 @@
+# WSL GPU environment requirements
+# Install CUDA and cuDNN in WSL before using TensorFlow GPU.
+
+numpy==2.4.4
+pandas==3.0.2
+opencv-contrib-python==4.13.0.92
+mediapipe==0.10.33
+matplotlib==3.10.8
+seaborn==0.13.2
+scikit-learn==1.8.0
+tensorflow==2.21.0

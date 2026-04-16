@@ -1,4 +1,0 @@
-still
-clockwise
-anticlockwise
-move

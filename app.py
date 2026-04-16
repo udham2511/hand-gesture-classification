@@ -1,235 +1,168 @@
-from utils import GestureClassifier
-from utils import HistoryClassifier
+"""Real-time hand gesture and motion classification system."""
 
-import mediapipe
+import mediapipe as mp
 import cv2
-import numpy
 
-from collections import deque
-from collections import Counter
+from mediapipe.tasks.python import vision
+from mediapipe.tasks.python import BaseOptions
 
+import numpy as np
+from collections import deque, Counter
 
-def normaliseGestureLandmarks(landmarks: numpy.ndarray) -> numpy.ndarray:
-    """normalise landmarks
-
-    Args:
-        landmarks (numpy.ndarray): landmarks array
-
-    Returns:
-        numpy.ndarray: normalised landmarks array
-    """
-    landmarksCopy = landmarks.copy()
-
-    landmarksCopy = (
-        landmarksCopy - numpy.array([landmarks[0]] * len(landmarks))
-    ).flatten()
-
-    return landmarksCopy / abs(landmarksCopy).max()
+from src import config
+from src.processor import normalize_gesture_landmarks, normalize_history_landmarks
+from src.classifier import TFLiteClassifier
+from src.visualizer import draw_landmarks, draw_info_text, draw_history_points
 
 
-def normaliseHistoryLandmarks(
-    landmarks: numpy.ndarray, frame: numpy.ndarray
-) -> numpy.ndarray:
-    """normalise landmarks
+# Load pre-trained gesture and motion classifiers
+gesture_ai = TFLiteClassifier(config.GESTURE_MODEL_PATH)
+history_ai = TFLiteClassifier(config.HISTORY_MODEL_PATH)
 
-    Args:
-        landmarks (numpy.ndarray): landmarks array
-        frame (numpy.ndarray): camera frame
+# Motion history tracking for each hand (up to MAX_HANDS)
+histories = {
+    0: deque(maxlen=config.HISTORY_LENGTH),
+    1: deque(maxlen=config.HISTORY_LENGTH),
+}
 
-    Returns:
-        numpy.ndarray: normalised landmarks array
-    """
-    landmarksCopy = landmarks.copy()
+# Store motion classification results for voting
+result_history = {
+    0: deque(maxlen=config.HISTORY_LENGTH),
+    1: deque(maxlen=config.HISTORY_LENGTH),
+}
 
-    landmarksCopy = (
-        landmarksCopy - numpy.array([landmarks[0]] * len(landmarks))
-    ) / numpy.array([frame.shape[-2::-1]] * len(landmarks))
+# Initialize video capture
+cap = cv2.VideoCapture(0)
 
-    return landmarksCopy.flatten()
+# Set camera resolution
+cap.set(3, config.IMAGE_SHAPE[0])
+cap.set(4, config.IMAGE_SHAPE[1])
 
+# Configure MediaPipe hand landmark detector
+options = vision.HandLandmarkerOptions(
+    base_options=BaseOptions(model_asset_path=r"./models/hand_landmarker.task"),
+    running_mode=vision.RunningMode.VIDEO,
+    num_hands=config.MAX_HANDS,
+)
 
-if __name__ == "__main__":
-    gestureModel = GestureClassifier()
-    historyModel = HistoryClassifier()
+with vision.HandLandmarker.create_from_options(options) as recognizer:
+    while cap.isOpened():
+        # Read video frame
+        ret, frame = cap.read()
 
-    with open(r"./utils/gesture/models/sample/labels.txt") as file:
-        GESTURELABELS = file.read().split("\n")
+        if not ret:
+            continue
 
-    with open(r"./utils/history/models/sample/labels.txt") as file:
-        HISTORYLABELS = file.read().split("\n")
+        # Mirror frame horizontally
+        cv2.flip(frame, 1, frame)
 
-    HISTORYLENGTH = 16
+        # Convert frame to MediaPipe format
+        mp_image = mp.Image(
+            image_format=mp.ImageFormat.SRGB,
+            data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+        )
 
-    fingerHistory = {"l": deque(maxlen=HISTORYLENGTH), "r": deque(maxlen=HISTORYLENGTH)}
-    resultHistory = {"l": deque(maxlen=HISTORYLENGTH), "r": deque(maxlen=HISTORYLENGTH)}
+        # Detect hand landmarks
+        result = recognizer.detect_for_video(
+            mp_image, int(cap.get(cv2.CAP_PROP_POS_MSEC))
+        )
 
-    drawing = mediapipe.solutions.drawing_utils
-    styles = mediapipe.solutions.drawing_styles
+        if result.hand_landmarks:
+            active_indices = set()
 
-    hands = mediapipe.solutions.hands
+            for i, hand_landmark in enumerate(result.hand_landmarks):
+                if i >= config.MAX_HANDS:
+                    break
 
-    PADDING = 20
-    BOXCOLOR = (255, 255, 0)
-    LENGTH = 50
+                # Draw hand skeleton
+                draw_landmarks(frame, hand_landmark)
 
-    SHAPE = (1280, 720)
+                active_indices.add(i)
 
-    cap = cv2.VideoCapture(0)
+                # Convert landmark coordinates to pixel positions
+                landmarks = np.array(
+                    [
+                        [landmark.x * frame.shape[1], landmark.y * frame.shape[0]]
+                        for landmark in hand_landmark
+                    ]
+                )
 
-    cap.set(3, SHAPE[0])
-    cap.set(4, SHAPE[1])
+                # Classify gesture
+                norm_gest = normalize_gesture_landmarks(landmarks)
 
-    with hands.Hands(
-        min_detection_confidence=0.4, min_tracking_confidence=0.4, max_num_hands=2
-    ) as detector:
-        while cap.isOpened():
-            success, frame = cap.read()
+                gesture_id = gesture_ai.predict(norm_gest)
+                gesture_label = config.GESTURE_LABELS[gesture_id]
 
-            if not success:
-                continue
+                label = gesture_label
 
-            cv2.flip(frame, 1, frame)
+                # Classify motion if gesture is pointing
+                if gesture_id == 2:
+                    # Track finger tip position
+                    histories[i].append(landmarks[8].astype(int))
 
-            frame.flags.writeable = False
+                    history_label = "Scanning..."
 
-            results = detector.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
-            frame.flags.writeable = True
-
-            if results.multi_hand_landmarks:
-                for hand_landmarks, handedness in zip(
-                    results.multi_hand_landmarks, results.multi_handedness
-                ):
-                    drawing.draw_landmarks(
-                        frame,
-                        hand_landmarks,
-                        hands.HAND_CONNECTIONS,
-                        styles.DrawingSpec((0, 0, 255), -1, 6),
-                        styles.DrawingSpec((0, 255, 0), 3, -1),
-                    )
-
-                    handLabel = handedness.classification[0].label.lower()[0]
-
-                    landmarks = numpy.array(
-                        [
-                            [landmark.x * frame.shape[1], landmark.y * frame.shape[0]]
-                            for landmark in hand_landmarks.landmark
-                        ]
-                    )
-
-                    normalisedGestureLandmarks = normaliseGestureLandmarks(landmarks)
-                    normalisedHistoryLandmarks = normaliseHistoryLandmarks(
-                        numpy.float64(fingerHistory[handLabel]), frame
-                    )
-
-                    gestureIndex = gestureModel(normalisedGestureLandmarks)
-
-                    fingerHistory[handLabel].append(
-                        list(landmarks[8]) if gestureIndex == 2 else [0, 0]
-                    )
-
-                    if (
-                        len(fingerHistory[handLabel]) == HISTORYLENGTH
-                        and gestureIndex == 2
-                    ):
-                        resultHistory[handLabel].append(
-                            historyModel(normalisedHistoryLandmarks)
+                    # Classify motion when buffer is full
+                    if len(histories[i]) == config.HISTORY_LENGTH:
+                        norm_hist = normalize_history_landmarks(
+                            np.array(histories[i]), frame.shape
                         )
 
-                        historyIndex = Counter(resultHistory[handLabel]).most_common()[
-                            0
-                        ][0]
+                        history_id = history_ai.predict(norm_hist)
+                        result_history[i].append(history_id)
 
-                    x1, y1 = (
-                        int(landmarks[:, 0].min()) - PADDING,
-                        int(landmarks[:, 1].min()) - PADDING,
-                    )
-                    x2, y2 = (
-                        int(landmarks[:, 0].max()) + PADDING,
-                        int(landmarks[:, 1].max()) + PADDING,
-                    )
+                        # Use majority voting for stable classification
+                        most_common_history_id = Counter(
+                            result_history[i]
+                        ).most_common()[0][0]
 
-                    cv2.line(frame, (x2 - LENGTH, y2), (x2, y2), BOXCOLOR, 3)
-                    cv2.line(frame, (x2, y2), (x2, y2 - LENGTH), BOXCOLOR, 3)
+                        history_label = config.HISTORY_LABELS[most_common_history_id]
 
-                    cv2.line(frame, (x1, y2), (x1 + LENGTH, y2), BOXCOLOR, 3)
-                    cv2.line(frame, (x1, y2), (x1, y2 - LENGTH), BOXCOLOR, 3)
+                    label = history_label
 
-                    if gestureIndex != 2 or (gestureIndex == 2 and handLabel == "r"):
-                        cv2.line(frame, (x2 - LENGTH, y1), (x2, y1), BOXCOLOR, 3)
-                        cv2.line(frame, (x2, y1), (x2, y1 + LENGTH), BOXCOLOR, 3)
+                # Calculate bounding box
+                x_coords = landmarks[:, 0].astype(int)
+                y_coords = landmarks[:, 1].astype(int)
 
-                    if gestureIndex != 2 or (gestureIndex == 2 and handLabel == "l"):
-                        cv2.line(frame, (x1 + LENGTH, y1), (x1, y1), BOXCOLOR, 3)
-                        cv2.line(frame, (x1, y1), (x1, y1 + LENGTH), BOXCOLOR, 3)
+                bbox = (
+                    min(x_coords) - config.PADDING,
+                    min(y_coords) - config.PADDING,
+                    max(x_coords) + config.PADDING,
+                    max(y_coords) + config.PADDING,
+                )
 
-                    (width, height), baseline = cv2.getTextSize(
-                        (
-                            GESTURELABELS[gestureIndex]
-                            if gestureIndex != 2
-                            else (
-                                HISTORYLABELS[historyIndex]
-                                + " "
-                                + (
-                                    GESTURELABELS[gestureIndex]
-                                    if historyIndex == 0
-                                    else ""
-                                )
-                            )
-                        ),
-                        cv2.FONT_HERSHEY_COMPLEX,
-                        1,
-                        2,
-                    )
+                # Draw bounding box and label
+                draw_info_text(
+                    frame,
+                    bbox,
+                    label,
+                    config.CORNER_LENGTH,
+                    config.BOXCOLOR,
+                    gesture_id,
+                    result.handedness[i][0].display_name[0],
+                )
 
-                    cv2.rectangle(
-                        frame,
-                        (x1, y1 - (height + baseline) - 20),
-                        (x1 + width + 60, y1 - 10),
-                        BOXCOLOR,
-                        -1,
-                    )
+                # Draw motion trail for pointing gesture
+                if gesture_id == 2:
+                    draw_history_points(frame, histories[i])
 
-                    cv2.putText(
-                        frame,
-                        (
-                            GESTURELABELS[gestureIndex]
-                            if gestureIndex != 2
-                            else (
-                                HISTORYLABELS[historyIndex]
-                                + " "
-                                + (
-                                    GESTURELABELS[gestureIndex]
-                                    if historyIndex == 0
-                                    else ""
-                                )
-                            )
-                        ),
-                        (x1 + 30, y1 - baseline // 2 - 15),
-                        cv2.FONT_HERSHEY_COMPLEX,
-                        1,
-                        (255, 255, 255),
-                        2,
-                    )
+            # Clear history for inactive hands
+            for i in range(config.MAX_HANDS):
+                if i not in active_indices:
+                    histories[i].clear()
 
-            else:
-                for key in fingerHistory.keys():
-                    fingerHistory[key].append([0, 0])
+        else:
+            # Clear all histories when no hands detected
+            for h in histories:
+                histories[h].clear()
 
-            for key in fingerHistory.keys():
-                for index, point in enumerate(fingerHistory[key]):
-                    if int(point[0]) != 0 and int(point[1]) != 0:
-                        cv2.circle(
-                            frame,
-                            list(map(int, point)),
-                            1 + int(index / 2),
-                            (157, 255, 157),
-                            2,
-                        )
+        # Display frame
+        cv2.imshow("Hand Gestuer Classifier", frame)
 
-            cv2.imshow("Hand Gesture Classification", frame)
+        # Exit on 'q' key press
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
 
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                cap.release()
-
-    cv2.destroyAllWindows()
+# Cleanup resources
+cap.release()
+cv2.destroyAllWindows()
