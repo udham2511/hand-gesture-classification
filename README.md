@@ -4,9 +4,16 @@ Real-time hand gesture and motion recognition using MediaPipe and TensorFlow Lit
 
 ## 🚀 Demo
 
-| Gesture Classification                                                      | History Classification                                                      |
-| :-------------------------------------------------------------------------- | :-------------------------------------------------------------------------- |
-| <video src="./demo/gesture-classification.mp4" autoplay muted loop></video> | <video src="./demo/history-classification.mp4" autoplay muted loop></video> |
+<div style="display:flex; gap:16px; flex-wrap:wrap;">
+  <div style="flex:1; min-width:280px;">
+    <h4>Gesture Classification</h4>
+    <video src="./demo/gesture-classification.mp4" autoplay muted loop style="max-width:100%; border-radius:8px;"></video>
+  </div>
+  <div style="flex:1; min-width:280px;">
+    <h4>History Classification</h4>
+    <video src="./demo/history-classification.mp4" autoplay muted loop style="max-width:100%; border-radius:8px;"></video>
+  </div>
+</div>
 
 ## 🎯 Features
 
